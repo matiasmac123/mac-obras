@@ -104,6 +104,11 @@
       return api({ action: 'sync', token: op.token, op: { id: op.id, kind: op.kind, data: op.data } }, op.kind === 'foto' ? 120000 : 30000)
         .then(function (r) {
           if (r && r.ok) { hubo = true; return cola.quitar(op.id).then(function () { return siguiente(i + 1); }); }
+          if (r && r.error === 'PERMISO') {          // no se reintenta: no está permitido
+            toast(r.mensaje || 'Acción no permitida');
+            if (op.kind === 'borrarFoto') marcarBorrada(op.data.fotoId, false);
+            return cola.quitar(op.id).then(function () { return siguiente(i + 1); });
+          }
           op.error = r && r.error === 'SESION' ? 'Sesión vencida: vuelve a ingresar' : ((r && (r.mensaje || r.error)) || 'Error');
           op.intentos = (op.intentos || 0) + 1;
           return cola.poner(op).then(function () { return siguiente(i + 1); });
@@ -148,6 +153,30 @@
   }
   function thumbs() { return cargar('thumbs') || []; }
   function agregarThumb(t) { var a = thumbs(); a.unshift(t); guardar('thumbs', a.slice(0, 40)); }
+  function quitarThumb(id) { guardar('thumbs', thumbs().filter(function (t) { return t.id !== id; })); }
+  function borradas() { var o = {}; (cargar('borradas') || []).forEach(function (id) { o[id] = true; }); return o; }
+  function marcarBorrada(id, si) {
+    var a = (cargar('borradas') || []).filter(function (x) { return x !== id; });
+    if (si !== false) a.unshift(id);
+    guardar('borradas', a.slice(0, 300));
+  }
+  function misFotosObra(o) {
+    var hoy = hoyLocal(), borr = borradas(), th = thumbs(), vistos = {}, out = [];
+    S.cola.forEach(function (op) { if (op.kind === 'borrarFoto') borr[op.data.fotoId] = true; });
+    var thumbDe = function (id) { var t = th.filter(function (x) { return x.id === id; })[0]; return t && t.thumb; };
+    S.cola.forEach(function (op) {
+      if (op.kind !== 'foto' || op.data.obraId !== o.id || op.userId !== S.ses.user.id) return;
+      out.push({ id: op.id, item: op.data.item || 'Avance', hora: op.data.hora, src: thumbDe(op.id) || op.data.imagen, cola: true }); vistos[op.id] = 1;
+    });
+    if (S.inicio && S.inicio.hoy === hoy) (o.misFotos || []).forEach(function (f) {
+      if (vistos[f.id] || borr[f.id]) return;
+      out.push({ id: f.id, item: f.item || 'Avance', hora: f.hora, src: thumbDe(f.id) || f.url }); vistos[f.id] = 1;
+    });
+    th.forEach(function (t) {
+      if (t.id && !vistos[t.id] && !borr[t.id] && t.obraId === o.id && t.fecha === hoy) { out.push({ id: t.id, item: t.item, hora: t.hora, src: t.thumb }); vistos[t.id] = 1; }
+    });
+    return out.sort(function (a, b) { return a.hora < b.hora ? 1 : -1; });
+  }
 
   /* ============================================================ GPS y fotos */
   function obtenerGPS() {
@@ -200,11 +229,12 @@
         var lineas = [obra.nombre + ' · ' + (opts.item || 'Avance') + (opts.comentario ? ' – ' + opts.comentario : ''),
           fechaCorta(iso.substr(0, 10)) + ' ' + iso.substr(11, 8) + ' · ' + (g ? coords(g) + ' ±' + g.precision + ' m' : 'sin GPS') + ' · ' + S.ses.user.nombre];
         return procesarImagen(file, lineas).then(function (img) {
-          agregarThumb({ obraId: obra.id, fecha: iso.substr(0, 10), item: opts.item || 'Avance', hora: iso, thumb: img.thumb });
           return encolar('foto', {
             fecha: iso.substr(0, 10), hora: iso, obraId: obra.id, tipo: opts.item ? 'SOLICITADA' : 'AVANCE', item: opts.item || '',
             comentario: opts.comentario || '', lat: g ? g.lat : '', lng: g ? g.lng : '', precision: g ? g.precision : '',
             origen: opts.camara ? 'camara' : 'galeria', imagen: img.data
+          }).then(function (op) {
+            agregarThumb({ id: op.id, obraId: obra.id, fecha: iso.substr(0, 10), item: opts.item || 'Avance', hora: iso, thumb: img.thumb });
           });
         });
       }).then(function () {
@@ -319,9 +349,9 @@
     var req = o.fotosReq || [];
     if (req.length) {
       html += '<div class="titulo"><span class="h2">Fotos solicitadas</span><b>' + e.listas + ' de ' + req.length + '</b></div><div class="card"><div class="lista">';
-      var th = thumbs();
+      var th = thumbs(), borr = borradas();
       req.forEach(function (it, n) {
-        var t = th.filter(function (x) { return x.obraId === o.id && x.item === it; })[0];
+        var t = th.filter(function (x) { return x.obraId === o.id && x.item === it && !borr[x.id]; })[0];
         var est = e.hechas[it] ? '<span class="muted chico" style="color:var(--ok)">Subida ✓</span>' : (e.enCola[it] ? '<span class="chico" style="color:var(--warn)">En el teléfono, por subir</span>' : '<span class="muted chico">Pendiente</span>');
         html += '<div class="item">' + (t ? '<img class="mini" src="' + t.thumb + '" alt="">' : '<span class="mini' + (e.hechas[it] ? '' : ' vacia') + '"></span>') +
           '<span class="txt"><b>' + esc(it) + '</b>' + est + '</span>' +
@@ -329,12 +359,20 @@
       });
       html += '</div></div>';
     }
-    var mias = thumbs().filter(function (x) { return x.obraId === o.id && x.fecha === hoy && x.item === 'Avance'; });
-    html += '<div class="titulo"><span class="h2">Fotos de avance</span><span class="muted chico">' + mias.length + ' hoy</span></div><div class="card">' +
+    html += '<div class="titulo"><span class="h2">Fotos de avance</span></div><div class="card">' +
       '<div class="campo"><label for="coment">Comentario (opcional)</label><input id="coment" type="text" placeholder="Ej: canalización sector cocina"></div>' +
       '<div class="grid2"><button class="btn neg" data-act="fotoAv" data-id="' + esc(o.id) + '" data-cam="1">' + ico('cam') + 'Cámara</button>' +
-      '<button class="btn lin" data-act="fotoAv" data-id="' + esc(o.id) + '">' + ico('gal') + 'Galería</button></div>' +
-      (mias.length ? '<div class="fotos">' + mias.map(function (x) { return '<img src="' + x.thumb + '" alt="Foto ' + hora(x.hora) + '">'; }).join('') + '</div>' : '') + '</div>';
+      '<button class="btn lin" data-act="fotoAv" data-id="' + esc(o.id) + '">' + ico('gal') + 'Galería</button></div></div>';
+
+    var mf = misFotosObra(o);
+    if (mf.length) {
+      html += '<div class="titulo"><span class="h2">Mis fotos de hoy</span><span class="muted chico">' + mf.length + '</span></div><div class="card">' +
+        '<p class="muted chico" style="margin:0">¿Subiste una foto por error? Bórrala aquí.</p><div class="mis-fotos">' + mf.map(function (f) {
+          return '<figure><img src="' + esc(f.src) + '" alt="' + esc(f.item) + '"><figcaption><b>' + esc(f.item) + '</b><br>' + hora(f.hora) +
+            (f.cola ? ' · <span style="color:var(--warn)">por subir</span>' : '') + '</figcaption>' +
+            '<button class="borrar" data-act="borrarFoto" data-id="' + esc(f.id) + '" data-obra="' + esc(o.id) + '">Borrar</button></figure>';
+        }).join('') + '</div></div>';
+    }
 
     var mats = opsDe(o.id, 'material');
     html += '<div class="titulo"><span class="h2">Materiales de bodega</span></div><div class="card">' +
@@ -411,13 +449,13 @@
 
   /* ============================================================ envíos pendientes */
   function vCola() {
-    var nombres = { asistencia: 'Asistencia', foto: 'Foto', bitacora: 'Cierre del día', material: 'Material de bodega' };
+    var nombres = { asistencia: 'Asistencia', foto: 'Foto', bitacora: 'Cierre del día', material: 'Material de bodega', borrarFoto: 'Borrar foto' };
     var html = '<header class="top"><h1>Envíos</h1><div class="sub">Lo que está guardado en el teléfono esperando señal</div>' + bandaRed() + '</header><main class="cuerpo">';
     if (!S.cola.length) html += '<div class="card"><p style="margin:0">' + ico('ok', 20, '#2f6b2f') + ' Todo está enviado.</p></div>';
     else {
       html += '<button class="btn prim full" data-act="sync">' + ico('sube') + 'Enviar ahora</button><div class="card"><div class="lista">' + S.cola.map(function (op) {
         var o = obraPorId(op.data.obraId);
-        var det = op.kind === 'foto' ? (op.data.item || 'Avance') : (op.kind === 'asistencia' ? op.data.tipo : (op.kind === 'material' ? op.data.material + ' × ' + op.data.cantidad : op.data.estado));
+        var det = op.kind === 'borrarFoto' ? 'por error' : op.kind === 'foto' ? (op.data.item || 'Avance') : (op.kind === 'asistencia' ? op.data.tipo : (op.kind === 'material' ? op.data.material + ' × ' + op.data.cantidad : op.data.estado));
         return '<div class="item"><span class="txt"><b>' + nombres[op.kind] + ' · ' + esc(det) + '</b><span class="muted chico">' + esc(o ? o.nombre : op.data.obraId) + ' · ' + fechaCorta(op.creado.substr(0, 10)) + ' ' + hora(op.creado) + '</span>' +
           (op.error ? '<span class="chico" style="color:var(--mal)">' + esc(op.error) + '</span>' : '') + '</span></div>';
       }).join('') + '</div></div>';
@@ -484,11 +522,13 @@
 
       html += '<div class="dos"><section class="card ancha"><h2>Últimas fotos</h2><div class="galeria">' + (A.recientes.slice(0, 16).map(function (p) {
         return '<figure><a href="https://drive.google.com/file/d/' + esc(p.fileId) + '/view" target="_blank" rel="noopener"><img loading="lazy" src="' + esc(p.url) + '" alt="' + esc(p.item || 'Avance') + '"></a>' +
-          '<figcaption><b>' + esc(nombreO(p.obraId)) + '</b><br>' + esc(p.item || p.comentario || 'Avance') + ' · ' + fechaCorta(String(p.fecha)) + ' ' + hora(p.hora) + ' · ' + esc(nombreT(p.trabajadorId).split(' ')[0]) + '</figcaption></figure>';
+          '<figcaption><b>' + esc(nombreO(p.obraId)) + '</b><br>' + esc(p.item || p.comentario || 'Avance') + ' · ' + fechaCorta(String(p.fecha)) + ' ' + hora(p.hora) + ' · ' + esc(nombreT(p.trabajadorId).split(' ')[0]) + '</figcaption>' +
+          '<div class="acciones-foto"><a class="bajar" href="' + urlBajar(p.fileId) + '" target="_blank" rel="noopener">⬇ Descargar</a>' +
+          '<button class="borrar" data-act="admBorrarFoto" data-id="' + esc(p.id) + '">Borrar</button></div></figure>';
       }).join('') || '<p class="muted">Aún no hay fotos.</p>') + '</div></section>';
 
       html += '<section class="card angosta"><h2>Salió de bodega</h2><div class="lista">' + (A.movimientos.filter(function (m) { return m.tipo === 'SALIDA'; }).map(function (m) {
-        return '<div class="item"><span class="txt"><b>' + esc(m.material) + '</b><span class="muted chico">' + esc(nombreO(m.obraId)) + ' · ' + esc(nombreT(m.trabajadorId).split(' ')[0]) + '</span></span><b>' + esc(m.cantidad) + '</b></div>';
+        return '<div class="item"><span class="txt"><b>' + esc(m.material) + '</b><span class="muted chico">' + esc(m.obraId ? nombreO(m.obraId) : (m.nota || 'Sin obra')) + ' · ' + esc(nombreT(m.trabajadorId).split(' ')[0]) + '</span></span><b>' + esc(m.cantidad) + '</b></div>';
       }).join('') || '<p class="muted">Sin movimientos este día.</p>') + '</div></section></div>';
       return html + '</main>' + nav('admin');
     });
@@ -530,7 +570,7 @@
         '<div class="card"><div class="lista">' + (lista.map(function (o) {
           return '<div class="item"><span class="txt"><b>' + esc(o.nombre) + '</b><span class="muted chico">' + esc([o.id, o.cliente, o.cotizacion ? 'COT ' + o.cotizacion : '', o.tipo].filter(Boolean).join(' · ')) +
             ' · fotos ' + o.hechas + '/' + o.fotosReq.length + ' · ' + o.totalFotos + ' en total</span></span>' +
-            '<a class="btn lin" href="#/informe/' + esc(o.id) + '">Informe</a><a class="btn lin" href="#/admin/obra/' + esc(o.id) + '">Editar</a></div>';
+            '<a class="btn lin" href="#/informe/' + esc(o.id) + '">Informe / Fotos</a><a class="btn lin" href="#/admin/obra/' + esc(o.id) + '">Editar</a></div>';
         }).join('') || '<p class="muted">No hay obras.</p>') + '</div></div></main>' + nav('admin');
     });
   }
@@ -595,16 +635,49 @@
           '<div class="campo"><label for="m_min">Aviso "quedan pocas" bajo</label><input id="m_min" type="number" value="' + esc(m.minimo || 0) + '"></div></div>' +
           '<div class="grid2"><button class="btn lin" data-act="mCancel">Cancelar</button><button class="btn prim" data-act="mGuardar" data-cod="' + esc(m.codigo || '') + '">Guardar</button></div></div>';
       } else html += '<button class="btn neg" data-act="mEditar" data-cod="nuevo">+ Agregar material</button>';
+      var sal = !m && S.tmp.salida && b.filter(function (x) { return x.codigo === S.tmp.salida; })[0];
+      if (sal) {
+        html += '<div class="card destacada"><h2>Salida de bodega – ' + esc(sal.material) + '</h2>' +
+          '<p class="muted chico">Para material que sale sin ir a una obra (ventas, uso interno, pérdidas). Stock actual: <b>' + esc(sal.stock) + ' ' + esc(sal.unidad) + '</b></p>' +
+          '<div class="grid2"><div class="campo"><label for="s_cant">Cantidad (' + esc(sal.unidad) + ') *</label><input id="s_cant" type="number" inputmode="decimal" min="0"></div>' +
+          '<div class="campo"><label for="s_mot">Motivo *</label><select id="s_mot">' +
+          ['Venta Mercado Libre', 'Venta a contratista', 'Venta directa', 'Uso interno / taller', 'Pérdida o daño', 'Otro'].map(function (o) { return '<option>' + o + '</option>'; }).join('') +
+          '</select></div></div>' +
+          '<div class="campo"><label for="s_det">Detalle (opcional)</label><input id="s_det" type="text" placeholder="N° de venta, empresa, boleta…"></div>' +
+          '<div class="grid2"><button class="btn lin" data-act="mSalCancel">Cancelar</button><button class="btn prim" data-act="mSalOk" data-cod="' + esc(sal.codigo) + '">Descontar</button></div></div>';
+      }
       html += '<div class="card"><div class="tabla"><table><thead><tr><th>Código</th><th>Material</th><th>Categoría</th><th>Stock</th><th></th></tr></thead><tbody>' + b.map(function (x) {
         return '<tr><td>' + esc(x.codigo) + '</td><td><b>' + esc(x.material) + '</b></td><td>' + esc(x.categoria) + '</td><td>' + estadoStock(x) + '</td>' +
           '<td style="white-space:nowrap"><button class="btn lin" data-act="mMov" data-cod="' + esc(x.codigo) + '" data-tipo="INGRESO">+ Ingreso</button> ' +
+          '<button class="btn lin" data-act="mSalida" data-cod="' + esc(x.codigo) + '">− Salida</button> ' +
           '<button class="btn lin" data-act="mMov" data-cod="' + esc(x.codigo) + '" data-tipo="AJUSTE">Inventario</button> ' +
           '<button class="btn lin" data-act="mEditar" data-cod="' + esc(x.codigo) + '">Editar</button></td></tr>';
-      }).join('') + '</tbody></table></div><p class="muted chico">"Inventario" = escribir la cantidad contada en bodega (el sistema guarda la diferencia).</p></div></main>' + nav('admin');
+      }).join('') + '</tbody></table></div><p class="muted chico">"− Salida" = material que sale sin ir a una obra (venta Mercado Libre, contratista, uso interno, pérdida).<br>"Inventario" = escribir la cantidad contada en bodega (el sistema guarda la diferencia).</p></div></main>' + nav('admin');
       return html;
     });
   }
 
+  function urlBajar(fileId) { return 'https://drive.google.com/uc?export=download&id=' + encodeURIComponent(fileId || ''); }
+  function bloqueDescarga(d, dias) {
+    var z = S.tmp.zip && S.tmp.zip.obraId === d.obra.id ? S.tmp.zip : null;
+    var h = '<section class="card noimprimir descarga"><h2>Descargar fotos</h2>';
+    if (!d.fotos.length) return h + '<p class="muted">Esta obra aún no tiene fotos.</p></section>';
+    h += '<p class="muted chico">Se arma un archivo ZIP con las fotos originales (con fecha, hora, GPS y nombre del trabajador estampados), ordenadas en carpetas por día.</p>' +
+      '<div class="fila-desc"><select id="zDia"><option value="">Todos los días (' + d.fotos.length + ' fotos)</option>' + dias.map(function (x) {
+        var n = d.fotos.filter(function (f) { return String(f.fecha) === x; }).length;
+        return n ? '<option value="' + esc(x) + '"' + (z && z.fecha === x ? ' selected' : '') + '>' + fechaCorta(x) + ' (' + n + ' fotos)</option>' : '';
+      }).join('') + '</select><button class="btn neg" data-act="zipFotos" data-id="' + esc(d.obra.id) + '">⬇ Descargar ZIP</button>' +
+      (d.obra.carpetaId ? '<a class="btn lin" href="https://drive.google.com/drive/folders/' + esc(d.obra.carpetaId) + '" target="_blank" rel="noopener">Abrir carpeta en Drive</a>' : '') + '</div>';
+    if (z && z.cargando) h += '<p><b>Preparando el ZIP…</b> <span class="muted">puede tardar hasta un par de minutos si son muchas fotos.</span></p>';
+    if (z && z.partes) {
+      h += '<div class="lista">' + z.partes.map(function (p, i) {
+        return '<div class="item"><span class="txt"><b>' + esc(p.nombre) + '</b><span class="muted chico">' + p.fotos + ' fotos' + (z.partes.length > 1 ? ' · parte ' + (i + 1) + ' de ' + z.partes.length : '') + '</span></span>' +
+          '<a class="btn prim" href="' + esc(p.url) + '" target="_blank" rel="noopener">Bajar</a></div>';
+      }).join('') + '</div>' + (z.faltan ? '<p class="muted chico">' + z.faltan + ' foto(s) no se encontraron en Drive.</p>' : '') +
+      '<p class="muted chico">El ZIP queda disponible 2 días; después se borra solo (las fotos originales siguen en Drive).</p>';
+    }
+    return h + '</section>';
+  }
   function vInforme(id) {
     var d = S.tmp.informe;
     if (!d || d.obra.id !== id) {
@@ -615,7 +688,7 @@
     var o = d.obra;
     var dias = uniq(d.fotos.map(function (f) { return String(f.fecha); }).concat(d.bitacora.map(function (b) { return String(b.fecha); }))).sort();
     var html = '<div class="noimprimir" style="padding:12px 16px;display:flex;gap:10px;flex-wrap:wrap"><a class="btn lin" href="#/admin/obras">← Volver</a>' +
-      '<button class="btn prim" data-act="imprimir">Imprimir / Guardar PDF</button></div><article class="informe">' +
+      '<button class="btn prim" data-act="imprimir">Imprimir / Guardar PDF</button></div>' + bloqueDescarga(d, dias) + '<article class="informe">' +
       '<header><img src="logo.png" alt="MAC"><div><h1>Informe fotográfico de obra</h1><div class="muted">' + esc(d.empresa || CFG.EMPRESA || '') + '</div></div></header>' +
       '<table><tbody><tr><th>Obra</th><td>' + esc(o.nombre) + '</td><th>Cliente</th><td>' + esc(o.cliente || '') + '</td></tr>' +
       '<tr><th>Cotización</th><td>' + esc(o.cotizacion || '') + '</td><th>Dirección</th><td>' + esc(o.direccion || '') + '</td></tr>' +
@@ -631,7 +704,7 @@
       }).join('') + '</tbody></table>';
     }
     html += '<h3>Registro fotográfico (' + d.fotos.length + ')</h3><div class="inf-fotos">' + d.fotos.map(function (f) {
-      return '<figure><img src="' + esc(f.url) + '" alt="' + esc(f.item || 'Avance') + '"><figcaption><b>' + esc(f.item || 'Avance') + '</b>' + (f.comentario ? ' – ' + esc(f.comentario) : '') + '<br>' +
+      return '<figure><img src="' + esc(f.url) + '" alt="' + esc(f.item || 'Avance') + '"><a class="bajar noimprimir" href="' + urlBajar(f.fileId) + '" target="_blank" rel="noopener">⬇ Descargar foto</a><figcaption><b>' + esc(f.item || 'Avance') + '</b>' + (f.comentario ? ' – ' + esc(f.comentario) : '') + '<br>' +
         fechaCorta(String(f.fecha)) + ' ' + hora(f.hora) + ' · ' + esc(f.trabajador) + (f.lat !== '' ? ' · ' + esc(coords(f)) : '') + '</figcaption></figure>';
     }).join('') + '</div></article>';
     return html;
@@ -686,6 +759,23 @@
     catBod: function (el) { S.tmp.catBod = el.dataset.v; render(); },
     sync: function () { if (!enLinea()) return toast('Sin señal por ahora'); sincronizar(); render(); },
     imprimir: function () { window.print(); },
+    borrarFoto: function (el) {
+      var id = el.dataset.id;
+      if (!confirm('¿Borrar esta foto? Usa esto solo si se subió por error.')) return;
+      var op = S.cola.filter(function (x) { return x.id === id; })[0];
+      quitarThumb(id); marcarBorrada(id);
+      if (op) { cola.quitar(id).then(leerCola).then(function () { toast('Foto borrada'); render(); }); return; }
+      encolar('borrarFoto', { fotoId: id, obraId: el.dataset.obra }).then(function () {
+        toast(enLinea() ? 'Foto borrada' : 'Se borrará cuando vuelva la señal'); render();
+      });
+    },
+    admBorrarFoto: function (el) {
+      if (!confirm('¿Borrar esta foto? Queda en la papelera de Drive por 30 días.')) return;
+      apiSes({ action: 'borrarFoto', fotoId: el.dataset.id }).then(function (r) {
+        if (!r.ok) return toast(r.mensaje || 'Error');
+        toast('Foto borrada'); return cargarAdmin(S.adminFecha, true).then(render);
+      }).catch(function (e) { toast(e.message || 'Necesita señal'); });
+    },
 
     admRefrescar: function () { var f = document.getElementById('fAdm').value || hoyLocal(); cargarAdmin(f, true).then(render).catch(function (e) { toast(e.message); }); },
     planTog: function (el) { var m = S.tmp.plan.m; (m[el.dataset.o] = m[el.dataset.o] || {}); m[el.dataset.o][el.dataset.t] = !m[el.dataset.o][el.dataset.t]; el.setAttribute('aria-pressed', !!m[el.dataset.o][el.dataset.t]); },
@@ -753,6 +843,29 @@
         if (!r.ok) return toast(r.mensaje || 'Error');
         toast('Material guardado'); S.tmp.editM = null; return cargarAdmin(S.adminFecha, true).then(render);
       }).catch(function (e) { toast(e.message || 'Necesita señal'); });
+    },
+    zipFotos: function (el) {
+      var id = el.dataset.id, dia = (document.getElementById('zDia') || {}).value || '';
+      S.tmp.zip = { obraId: id, fecha: dia, cargando: true }; render();
+      apiSes({ action: 'descargarFotos', obraId: id, fecha: dia }, 330000).then(function (r) {
+        if (!r.ok) { S.tmp.zip = null; render(); return toast(r.mensaje || 'Error'); }
+        S.tmp.zip = { obraId: id, fecha: dia, partes: r.partes, faltan: r.faltan }; render();
+        toast(r.partes.length > 1 ? 'Listo: ' + r.total + ' fotos en ' + r.partes.length + ' partes' : 'Listo: ' + r.total + ' fotos');
+      }).catch(function (e) { S.tmp.zip = null; render(); toast(e.name === 'AbortError' ? 'Tardó demasiado. Prueba descargando por día.' : (e.message || 'Necesita señal')); });
+    },
+    mSalida: function (el) { S.tmp.salida = el.dataset.cod; S.tmp.editM = null; render(); window.scrollTo(0, 0); setTimeout(function () { var c = document.getElementById('s_cant'); if (c) c.focus(); }, 50); },
+    mSalCancel: function () { S.tmp.salida = null; render(); },
+    mSalOk: function (el) {
+      var x = S.admin.bodega.filter(function (b) { return b.codigo === el.dataset.cod; })[0];
+      var cant = num(document.getElementById('s_cant').value), mot = document.getElementById('s_mot').value, det = document.getElementById('s_det').value.trim();
+      if (!(cant > 0)) return toast('Escribe la cantidad que sale');
+      if (cant > Number(x.stock) && !confirm('En el sistema hay ' + x.stock + ' ' + x.unidad + ' y vas a sacar ' + cant + '. El stock quedará negativo. ¿Continuar?')) return;
+      el.disabled = true;
+      apiSes({ action: 'movimientoBodega', m: { codigo: x.codigo, tipo: 'SALIDA', cantidad: cant, nota: mot + (det ? ' – ' + det : '') } }).then(function (r) {
+        el.disabled = false;
+        if (!r.ok) return toast(r.mensaje || 'Error');
+        toast('Descontado. Quedan ' + r.stock + ' ' + x.unidad); S.tmp.salida = null; return cargarAdmin(S.adminFecha, true).then(render);
+      }).catch(function (e) { el.disabled = false; toast(e.message || 'Necesita señal'); });
     },
     mMov: function (el) {
       var x = S.admin.bodega.filter(function (b) { return b.codigo === el.dataset.cod; })[0], tipo = el.dataset.tipo;

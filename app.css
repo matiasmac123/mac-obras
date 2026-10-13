@@ -65,6 +65,11 @@ img{max-width:100%}
 .item .txt b{font-weight:600}
 .mini{width:52px;height:52px;border-radius:10px;background:#d9d6cc;object-fit:cover;flex:none}
 .mini.vacia{background:transparent;border:2px dashed #c9c5b8}
+.mis-fotos{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px}
+.mis-fotos figure{margin:0;display:flex;flex-direction:column;gap:4px}
+.mis-fotos img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;background:#d9d6cc}
+.mis-fotos figcaption{font-size:12px;color:#444}
+.borrar{min-height:40px;border-radius:10px;border:1px solid #e3b3b3;background:#fff;color:var(--mal);font-weight:700;cursor:pointer}
 .fotos{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px}
 .fotos img,.fotos .ph{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;background:#d9d6cc}
 
@@ -102,6 +107,11 @@ td{padding:10px 6px;border-bottom:1px solid #efede7;vertical-align:top}
 .subnav a{padding:8px 14px;border-radius:999px;background:#fff;border:1px solid #cfccc1;text-decoration:none;font-weight:600;font-size:14px}
 .subnav a.act{background:var(--negro);color:var(--amarillo);border-color:var(--negro)}
 
+.bajar{display:inline-flex;align-items:center;justify-content:center;min-height:40px;border-radius:10px;border:1px solid #cfccc1;background:#fff;font-weight:700;font-size:14px;text-decoration:none;padding:0 10px}
+.acciones-foto{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px}.acciones-foto .bajar,.acciones-foto .borrar{white-space:nowrap}
+.inf-fotos .bajar{margin-top:6px;width:100%}
+.descarga{max-width:900px;margin:0 auto 14px;width:calc(100% - 32px)}
+.fila-desc{display:flex;flex-wrap:wrap;gap:10px}.fila-desc select{flex:1 1 220px;width:auto}
 #toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:var(--negro);color:#fff;padding:12px 18px;border-radius:12px;font-size:15px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50;max-width:90vw;text-align:center}
 #toast.ver{opacity:1}
 .cargando{opacity:.6;pointer-events:none}

@@ -1,5 +1,5 @@
 // MAC Obras – service worker: deja la app disponible sin señal
-var CACHE = 'mac-obras-v1';
+var CACHE = 'mac-obras-v5';
 var SHELL = ['./', './index.html', './app.css', './app.js', './config.js', './manifest.webmanifest', './logo.png',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
@@ -20,6 +20,13 @@ self.addEventListener('fetch', function (e) {
   var propio = url.origin === self.location.origin;
   var fuente = /fonts\.(googleapis|gstatic)\.com$/.test(url.hostname);
   if (!propio && !fuente) return;
+  // config.js: siempre la versión más nueva si hay señal
+  if (propio && /config\.js$/.test(url.pathname)) {
+    e.respondWith(fetch(req).then(function (res) {
+      var copia = res.clone(); caches.open(CACHE).then(function (c) { c.put(req, copia); }); return res;
+    }).catch(function () { return caches.match(req, { ignoreSearch: true }); }));
+    return;
+  }
   // abre al instante con lo guardado y actualiza en segundo plano (la versión nueva se ve al volver a abrir)
   e.respondWith(caches.match(req, { ignoreSearch: true }).then(function (guardado) {
     var red = fetch(req).then(function (res) {
