@@ -1,5 +1,4 @@
-// ⬇⬇⬇  PEGA AQUÍ LA URL DE TU APLICACIÓN WEB DE APPS SCRIPT (termina en /exec)  ⬇⬇⬇
 window.MAC_CONFIG = {
-  API_URL: 'PEGA_AQUI_LA_URL_DE_APPS_SCRIPT',
+  API_URL: 'https://script.google.com/macros/s/AKfycbzmr7kzTmom34HlDJeaDKXOhbWL7HmdhHQr6bSyLH_a2wrdQ7NLgcojOhpNI6F_UyrOsA/exec',
   EMPRESA: 'Servicios de Construcción MAC Ltda.'
 };
